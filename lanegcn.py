@@ -5,7 +5,7 @@
 import numpy as np
 import os
 import sys
-from fractions import gcd
+from math import gcd
 from numbers import Number
 
 import torch
@@ -47,8 +47,8 @@ if "save_dir" not in config:
 if not os.path.isabs(config["save_dir"]):
     config["save_dir"] = os.path.join(root_path, "results", config["save_dir"])
 
-config["batch_size"] = 32
-config["val_batch_size"] = 32
+config["batch_size"] = 4
+config["val_batch_size"] = 4
 config["workers"] = 0
 config["val_workers"] = config["workers"]
 
@@ -746,9 +746,9 @@ class PredLoss(nn.Module):
     def forward(self, out: Dict[str, List[Tensor]], gt_preds: List[Tensor], has_preds: List[Tensor]) -> Dict[str, Union[Tensor, int]]:
         cls, reg = out["cls"], out["reg"]
         cls = torch.cat([x for x in cls], 0)
-        reg = torch.cat([x for x in reg], 0)
-        gt_preds = torch.cat([x for x in gt_preds], 0)
-        has_preds = torch.cat([x for x in has_preds], 0)
+        reg = torch.cat([x for x in reg], 0) #66,6,30,2
+        gt_preds = torch.cat([x for x in gt_preds], 0) #66,30,2
+        has_preds = torch.cat([x for x in has_preds], 0)  #66,30
 
         loss_out = dict()
         zero = 0.0 * (cls.sum() + reg.sum())
@@ -764,7 +764,7 @@ class PredLoss(nn.Module):
             has_preds.device
         ) / float(num_preds)
         max_last, last_idcs = last.max(1)
-        mask = max_last > 1.0
+        mask = max_last > 1.0  #batchsize
 
         cls = cls[mask]
         reg = reg[mask]
@@ -773,26 +773,26 @@ class PredLoss(nn.Module):
         last_idcs = last_idcs[mask]
 
         row_idcs = torch.arange(len(last_idcs)).long().to(last_idcs.device)
-        dist = []
+        dist = [] #找到与真值最接近的模态
         for j in range(num_mods):
             dist.append(
                 torch.sqrt(
                     (
-                        (reg[row_idcs, j, last_idcs] - gt_preds[row_idcs, last_idcs])
+                        (reg[row_idcs, j, last_idcs] - gt_preds[row_idcs, last_idcs]) #reg[row_idcs, j, last_idcs] : batch_size,2
                         ** 2
                     ).sum(1)
                 )
             )
         dist = torch.cat([x.unsqueeze(1) for x in dist], 1)
-        min_dist, min_idcs = dist.min(1)
+        min_dist, min_idcs = dist.min(1) #min_idcs: batch_size
         row_idcs = torch.arange(len(min_idcs)).long().to(min_idcs.device)
 
         mgn = cls[row_idcs, min_idcs].unsqueeze(1) - cls
-        mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)
-        mask1 = dist - min_dist.view(-1, 1) > self.config["cls_ignore"]
+        mask0 = (min_dist < self.config["cls_th"]).view(-1, 1)  #小于cls阈值的不做分类损失
+        mask1 = dist - min_dist.view(-1, 1) > self.config["cls_ignore"] #终点距离十分接近真值也不做损失 阈值0.2
         mgn = mgn[mask0 * mask1]
         mask = mgn < self.config["mgn"]
-        coef = self.config["cls_coef"]
+        coef = self.config["cls_coef"] #cls loss weigth? 1.0
         loss_out["cls_loss"] += coef * (
             self.config["mgn"] * mask.sum() - mgn[mask].sum()
         )
@@ -800,10 +800,10 @@ class PredLoss(nn.Module):
 
         reg = reg[row_idcs, min_idcs]
         coef = self.config["reg_coef"]
-        loss_out["reg_loss"] += coef * self.reg_loss(
+        loss_out["reg_loss"] += coef * self.reg_loss( #self.reg_loss  smoothL1loss
             reg[has_preds], gt_preds[has_preds]
-        )
-        loss_out["num_reg"] += has_preds.sum().item()
+        ) #reg[has_preds] :1364,2 所有点放在一起计算损失
+        loss_out["num_reg"] += has_preds.sum().item() #所有点的个数
         return loss_out
 
 
@@ -814,10 +814,10 @@ class Loss(nn.Module):
         self.pred_loss = PredLoss(config)
 
     def forward(self, out: Dict, data: Dict) -> Dict:
-        loss_out = self.pred_loss(out, gpu(data["gt_preds"]), gpu(data["has_preds"]))
+        loss_out = self.pred_loss(out, gpu(data["gt_preds"]), gpu(data["has_preds"])) #data["has_preds"][0].shape [23,30]?
         loss_out["loss"] = loss_out["cls_loss"] / (
             loss_out["num_cls"] + 1e-10
-        ) + loss_out["reg_loss"] / (loss_out["num_reg"] + 1e-10)
+        ) + loss_out["reg_loss"] / (loss_out["num_reg"] + 1e-10)  #平衡类别损失和回归损失 存到'loss'            
         return loss_out
 
 
@@ -832,14 +832,14 @@ class PostProcess(nn.Module):
         post_out["gt_preds"] = [x[0:1].numpy() for x in data["gt_preds"]]
         post_out["has_preds"] = [x[0:1].numpy() for x in data["has_preds"]]
         return post_out
-
+        #将数据放到cpu干嘛
     def append(self, metrics: Dict, loss_out: Dict, post_out: Optional[Dict[str, List[ndarray]]]=None) -> Dict:
         if len(metrics.keys()) == 0:
-            for key in loss_out:
+            for key in loss_out:#dict_keys(['cls_loss', 'num_cls', 'reg_loss', 'num_reg', 'loss'])
                 if key != "loss":
                     metrics[key] = 0.0
 
-            for key in post_out:
+            for key in post_out: #dict_keys(['preds', 'gt_preds', 'has_preds'])
                 metrics[key] = []
 
         for key in loss_out:
@@ -900,11 +900,13 @@ def pred_metrics(preds, gt_preds, has_preds):
 
 
 def get_model():
+    
+    
     net = Net(config)
-    net = net.cuda()
+    #net = net.cuda(torch.cuda.current_device())
 
-    loss = Loss(config).cuda()
-    post_process = PostProcess(config).cuda()
+    loss = Loss(config).cuda(torch.cuda.current_device())
+    post_process = PostProcess(config).cuda(torch.cuda.current_device())
 
     params = net.parameters()
     opt = Optimizer(params, config)
