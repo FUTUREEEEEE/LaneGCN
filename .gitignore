@@ -5,3 +5,4 @@ logs/
 dataset/
 2way
 dataset
+*.ckpt
