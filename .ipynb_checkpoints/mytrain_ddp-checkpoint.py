@@ -161,7 +161,7 @@ def main(rank, world_size):
     )
     
     dataset = ArgoTestDataset(config["test_split"], config, train=False)
-    data_loader = DataLoader(
+    test_loader = DataLoader(
         dataset,
         batch_size=config["val_batch_size"],
         num_workers=config["val_workers"],
@@ -179,7 +179,8 @@ def main(rank, world_size):
         print(config)
     for i in range(remaining_epochs):
         train(epoch + i, config, train_loader, net, loss, post_process, opt, val_loader)
-
+    if rank == 0:    
+        test(test_loader,net)
 
 # def worker_init_fn(pid):
 #     np_seed = hvd.rank() * 1024 + int(pid)
@@ -266,7 +267,35 @@ def val(config, data_loader, net, loss, post_process, epoch):
     #     post_process.display(metrics, dt, epoch)
     net.train()
 
+def test(data_loader,net):
+    # begin inference
+    preds = {}
+    gts = {}
+    cities = {}
+    for ii, data in tqdm(enumerate(data_loader)):
+        data = dict(data)
+        with torch.no_grad():
+            output = net(data)
+            results = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
+        for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
+            preds[argo_idx] = pred_traj.squeeze()
+            cities[argo_idx] = data["city"][i]
+            gts[argo_idx] = data["gt_preds"][i][0] if "gt_preds" in data else None
 
+    # save for further visualization
+    res = dict(
+        preds = preds,
+        gts = gts,
+        cities = cities,
+    )
+    # torch.save(res,f"{config['save_dir']}/results.pkl")
+    
+
+    # for test set: save as h5 for submission in evaluation server
+    from argoverse.evaluation.competition_util import generate_forecasting_h5
+    generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
+    print("finish generation")
+        
 def save_ckpt(net, opt, save_dir, epoch):
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
