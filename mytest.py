@@ -12,13 +12,17 @@
 #
 # Written by Ming Liang, Yun Chen
 # ---------------------------------------------------------------------------
+# import debugpy
+# debugpy.listen(address = ('0.0.0.0', 5678))
+# debugpy.wait_for_client() 
+# breakpoint()
 
 import argparse
 import os
 os.umask(0)
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-os.environ["OMP_NUM_THREADS"] = "1"
+# os.environ["MKL_NUM_THREADS"] = "1"
+# os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# os.environ["OMP_NUM_THREADS"] = "1"
 import pickle
 import sys
 from importlib import import_module
@@ -29,8 +33,10 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from data import ArgoTestDataset
+from torch.utils.data import Sampler, DataLoader
 from utils import Logger, load_pretrain
 
+import ipdb;ipdb.set_trace()
 
 root_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, root_path)
@@ -61,30 +67,56 @@ def main():
     if not os.path.isabs(ckpt_path):
         ckpt_path = os.path.join(config["save_dir"], ckpt_path)
     ckpt = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
-    load_pretrain(net, ckpt["state_dict"])
+    
+    #load a ddp model 
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()  
+    for k, v in ckpt["state_dict"].items():
+        name = k[7:] # remove `module.`
+        new_state_dict[name] = v
+    net.load_state_dict(new_state_dict,strict=True)
+    
     net.eval()
-    net.cuda()
-
+    config['preprocess']=True
     # Data loader for evaluation
-    dataset = ArgoTestDataset(args.split, config, train=False)
-    data_loader = DataLoader(
-        dataset,
-        batch_size=config["val_batch_size"],
-        num_workers=config["val_workers"],
-        collate_fn=collate_fn,
-        shuffle=True,
-        pin_memory=True,
-    )
-
+    if args.split == "val":
+        Dataset=_
+        dataset = Dataset(config["val_split"], config, train=False)
+        data_loader = DataLoader(
+            dataset,
+            batch_size=config["val_batch_size"],
+            num_workers=config["val_workers"],
+            collate_fn=collate_fn,
+            shuffle=True,
+            pin_memory=True,
+        )
+    else :
+        dataset = ArgoTestDataset(args.split, config, train=False)
+        data_loader = DataLoader(
+            dataset,
+            batch_size=128,#config["val_batch_size"],
+            num_workers=config["val_workers"],
+            collate_fn=collate_fn,
+            #shuffle=True,
+            pin_memory=True,
+        )
     # begin inference
     preds = {}
     gts = {}
     cities = {}
+    net.cuda()
+    metrics = dict()
     for ii, data in tqdm(enumerate(data_loader)):
         data = dict(data)
         with torch.no_grad():
             output = net(data)
             results = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
+            
+            loss_out = loss(output, data)
+            post_out = post_process(output, data)
+            post_process.append(metrics, loss_out, post_out)
+            post_process.display(metrics, 0, 0, 0)
+            
         for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
             preds[argo_idx] = pred_traj.squeeze()
             cities[argo_idx] = data["city"][i]
@@ -112,7 +144,8 @@ def main():
         # for test set: save as h5 for submission in evaluation server
         from argoverse.evaluation.competition_util import generate_forecasting_h5
         generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
-        print("finish generation")
+        print("----------------finish generate---------------")
+
 
 
 if __name__ == "__main__":

@@ -7,10 +7,10 @@ LOG_FILE=logs/train-log-$START_TIME
 
 srun  -p caif_dev \
       -n $num_process\
-      -x SH-IDC1-10-140-0-139 \
       --gres=gpu:$g\
       --ntasks-per-node=$g \
-      --job-name=multi_node \
+      --cpus-per-task=8 \
+      --job-name=complete_run \
 python  mytrain_ddp.py -m lanegcn \
-  2>&1 | tee $LOG_FILE 
+  2>&1 | tee $LOG_FILE 1
 echo -e "\033[32m[ Please see LOG_FILE for details: \"tail -f ${LOG_FILE}\" ]\033[0m"

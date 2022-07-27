@@ -198,7 +198,7 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
 
 def val(config, data_loader, net, loss, post_process, epoch):
     net.eval()
-    print("---------------VAL---------------------")
+
     start_time = time.time()
     metrics = dict()
     for i, data in enumerate(data_loader):
@@ -208,14 +208,11 @@ def val(config, data_loader, net, loss, post_process, epoch):
             loss_out = loss(output, data)
             post_out = post_process(output, data)
             post_process.append(metrics, loss_out, post_out)
-            
-    
+
     dt = time.time() - start_time
-    post_process.display(metrics, dt, epoch, 777)
-    print("------------------END-VAL---------------------")
     # metrics = sync(metrics)
     # if hvd.rank() == 0:
-    #     post_process.display(metrics, dt, epoch)
+    post_process.display(metrics, dt, epoch)
     net.train()
 
 

@@ -9,6 +9,7 @@
 
 
 import os
+from tkinter.messagebox import NO
 
 os.umask(0)
 import argparse
@@ -23,14 +24,20 @@ from numbers import Number
 from tqdm import tqdm
 import torch
 from torch.utils.data import Sampler, DataLoader
-
-
 from torch.utils.data.distributed import DistributedSampler
-
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+import subprocess
 from utils import Logger, load_pretrain
 
+from torch.distributed.elastic.multiprocessing.errors import record
+from lanegcn import Optimizer
 
 
+
+MY_TIME=time.strftime('%mmounth%dday%Hhour%Mminit%Ss')
+DEBUG=True
 
 root_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, root_path)
@@ -50,7 +57,20 @@ parser.add_argument(
 
 device = torch.device("cuda")
 
-def main():
+
+
+
+def cleanup():
+    dist.destroy_process_group()
+
+@record
+def main(rank, world_size):
+
+
+    # initialize the process group
+    dist.init_process_group(backend="nccl",world_size=world_size,rank=rank)
+    print("inited rank",rank)
+
     seed=7
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -60,8 +80,12 @@ def main():
     # Import all settings for experiment.
     args = parser.parse_args()
     model = import_module(args.model)
-    config, Dataset, collate_fn, net, loss, post_process, opt = model.get_model()
+    config, Dataset, collate_fn, net, loss, post_process, _ = model.get_model()
 
+    #ddp
+    net.to("cuda")
+    net = DDP(net, device_ids=[rank])
+    opt = Optimizer(net.parameters(), config)
 
 
     if args.resume or args.weight:
@@ -76,7 +100,6 @@ def main():
 
     if args.eval:
         # Data loader for evaluation
-        net.to("cuda")
         dataset = Dataset(config["val_split"], config, train=False)
         
         val_loader = DataLoader(
@@ -91,14 +114,15 @@ def main():
        
         val(config, val_loader, net, loss, post_process, 999)
         return
-
+    print(config)
+    print(MY_TIME)
     # Create log and copy all code
     save_dir = config["save_dir"]
-    log = os.path.join(save_dir, "log")
+    # log = os.path.join(save_dir, "log")
 
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    sys.stdout = Logger(log)
+    # sys.stdout = Logger(log)
 
     src_dirs = [root_path]
     dst_dirs = [os.path.join(save_dir, "files")]
@@ -111,33 +135,48 @@ def main():
 
     # Data loader for training
     dataset = Dataset(config["train_split"], config, train=True)
-
+    
+    train_sampler =DistributedSampler(dataset) #DDP
+    
     train_loader = DataLoader(
         dataset,
         batch_size=config["batch_size"],
         num_workers=config["workers"],
-        #sampler=train_sampler,
+        sampler=train_sampler,
         collate_fn=collate_fn,
         pin_memory=True,
         drop_last=True,
     )
 
     # Data loader for evaluation
-    dataset = Dataset(config["val_split"], config, train=False)
-
+    dataset  = Dataset(config["val_split"], config, train=False)
+    val_sampler=DistributedSampler(dataset) #DDP
     val_loader = DataLoader(
         dataset,
         batch_size=config["val_batch_size"],
         num_workers=config["val_workers"],
-        #sampler=val_sampler,
+        sampler=val_sampler,
         collate_fn=collate_fn,
+        pin_memory=True,
+    )
+    
+    dataset = ArgoTestDataset(config["test_split"], config, train=False)
+    data_loader = DataLoader(
+        dataset,
+        batch_size=config["val_batch_size"],
+        num_workers=config["val_workers"],
+        collate_fn=collate_fn,
+        shuffle=False,
         pin_memory=True,
     )
 
 
-
     epoch = config["epoch"]
     remaining_epochs = int(np.ceil(config["num_epochs"] - epoch))
+    if rank == 0:
+        print("----------------config---------------------")
+        #print(f"num_batches:{num_batches}  epoch_per_batch:{epoch_per_batch}  save_iters:{save_iters} display_iters:{display_iters} val_iters:{val_iters} ")
+        print(config)
     for i in range(remaining_epochs):
         train(epoch + i, config, train_loader, net, loss, post_process, opt, val_loader)
 
@@ -151,22 +190,25 @@ def main():
 
 def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=None):
     #train_loader.sampler.set_epoch(int(epoch))
-    net.to("cuda")
+
     net.train()
     
-    num_batches = len(train_loader)
+    num_batches = len(train_loader) #1608*128个样本
     epoch_per_batch = 1.0 / num_batches
     save_iters = int(np.ceil(config["save_freq"] * num_batches))
-    display_iters = int(config["display_iters"] )
-    val_iters = int(config["val_iters"] )
+    display_iters = int(config["display_iters"]  )#/(torch.cuda.device_count() * config["batch_size"]) )
+    val_iters = int(config["val_iters"] )# /(torch.cuda.device_count() * config["batch_size"]))
 
     start_time = time.time()
     metrics = dict()
-    for i, data in tqdm(enumerate(train_loader)):
+    
+    rank=dist.get_rank()
+
+    for i, data in tqdm(enumerate(train_loader),disable=rank):
         epoch += epoch_per_batch
         data = dict(data)
         
-        
+
         output = net(data)
         loss_out = loss(output, data)  #output: list len4, output[0]:23,6,30,2 data['gt_preds'][0]:23,30,2
         post_out = post_process(output, data)
@@ -177,18 +219,22 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
         lr = opt.step(epoch)
 
         num_iters = int(np.round(epoch * num_batches))
-        if  (
+        if rank == 0 and (
             num_iters % save_iters == 0 or epoch >= config["num_epochs"]
         ):
-            save_ckpt(net, opt, config["save_dir"], epoch)
+            print(f"saving at num_iters:{num_iters} epoch: {epoch}")
+            save_ckpt(net, opt, config["save_dir"]+MY_TIME, epoch)
 
-        if i % val_iters == 0:
+        if num_iters % save_iters == 0 and rank == 0 :#display_iters == 0 and rank==0:
+            print(f"display---num_iters:{num_iters} iter:{i}")
             dt = time.time() - start_time
+            # metrics = sync(metrics)
+            # if hvd.rank() == 0:
             post_process.display(metrics, dt, epoch, lr)
             start_time = time.time()
             metrics = dict()
 
-        if i % 100 == 0:
+        if num_iters % save_iters == 0 :#val_iters == 0:
             val(config, val_loader, net, loss, post_process, epoch)
 
         if epoch >= config["num_epochs"]:
@@ -213,6 +259,8 @@ def val(config, data_loader, net, loss, post_process, epoch):
     dt = time.time() - start_time
     post_process.display(metrics, dt, epoch, 777)
     print("------------------END-VAL---------------------")
+    if epoch >10 and DEBUG and dist.get_rank()==0:
+        import ipdb;ipdb.set_trace()
     # metrics = sync(metrics)
     # if hvd.rank() == 0:
     #     post_process.display(metrics, dt, epoch)
@@ -234,18 +282,38 @@ def save_ckpt(net, opt, save_dir, epoch):
     )
 
 
-def sync(data):
-    data_list = comm.allgather(data)
-    data = dict()
-    for key in data_list[0]:
-        if isinstance(data_list[0][key], list):
-            data[key] = []
-        else:
-            data[key] = 0
-        for i in range(len(data_list)):
-            data[key] += data_list[i][key]
-    return data
+# def sync(data):
+#     data_list = comm.allgather(data)
+#     data = dict()
+#     for key in data_list[0]:
+#         if isinstance(data_list[0][key], list):
+#             data[key] = []
+#         else:
+#             data[key] = 0
+#         for i in range(len(data_list)):
+#             data[key] += data_list[i][key]
+#     return data
 
 
 if __name__ == "__main__":
-    main()
+    num_gpus = torch.cuda.device_count()
+
+    assert "SLURM_JOB_ID" in os.environ
+    rank = int(os.environ["SLURM_PROCID"])
+    world_size = int(os.environ["SLURM_NTASKS"])
+    node_list = os.environ["SLURM_NODELIST"]
+    addr = subprocess.getoutput(f"scontrol show hostname {node_list} | head -n1")
+    # specify master port
+    port=None
+    if port is not None:
+        os.environ["MASTER_PORT"] = str(port)
+    elif "MASTER_PORT" not in os.environ:
+        os.environ["MASTER_PORT"] = "29610"
+    if "MASTER_ADDR" not in os.environ:
+        os.environ["MASTER_ADDR"] = addr
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["LOCAL_RANK"] = str(rank % num_gpus)
+    os.environ["RANK"] = str(rank)
+    
+    torch.cuda.set_device(rank % num_gpus)
+    main(rank,world_size)
