@@ -1,10 +1,7 @@
 # Copyright (c) 2020 Uber Technologies, Inc.
 # Please check LICENSE for more detail
 
-import debugpy
-debugpy.listen(address = ('0.0.0.0', 5678))
-debugpy.wait_for_client() 
-breakpoint()
+
 """
 Preprocess the data(csv), build graph from the HDMAP and saved as pkl
 """
@@ -173,7 +170,7 @@ def test(config):
     test_loader = DataLoader(
         dataset,
         batch_size=config["val_batch_size"],
-        num_workers=4,#config["val_workers"],  #for debug
+        num_workers=config["val_workers"],
         shuffle=False,
         collate_fn=collate_fn,
         pin_memory=True,
@@ -181,8 +178,8 @@ def test(config):
     stores = [None for x in range(78143)]
 
     t = time.time()
-    for i, data in enumerate(tqdm(test_loader)): #data['trajs'][0][0].shape torch.Size([20, 2])
-        data = dict(data) #dict_keys(['city', 'trajs', 'steps', 'feats', 'ctrs', 'orig', 'theta', 'rot', 'gt_preds', 'has_preds', 'idx', 'graph'])
+    for i, data in enumerate(tqdm(test_loader)):
+        data = dict(data)
         for j in range(len(data["idx"])):
             store = dict()
             for key in [
@@ -198,7 +195,7 @@ def test(config):
                 store[key] = to_numpy(data[key][j])
                 if key in ["graph"]:
                     store[key] = to_int16(store[key])
-            stores[store["idx"]] = store  #stores a list ,store a dict
+            stores[store["idx"]] = store
 
         if (i + 1) % 100 == 0:
             print(i, time.time() - t)

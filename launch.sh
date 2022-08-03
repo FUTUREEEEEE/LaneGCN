@@ -5,7 +5,7 @@ echo '[USAGE] sh train.sh <CONFIG> <GPU_NUM> <JOB_NAME>'
 mkdir -p logs
 LOG_FILE=logs/train-log-$START_TIME
 
-srun  -p caif_dev \
+srun  -p caif_debug \
       -n $num_process\
       --gres=gpu:$g\
       --ntasks-per-node=$g \

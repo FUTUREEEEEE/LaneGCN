@@ -18,10 +18,6 @@ class ArgoDataset(Dataset):
         self.config = config
         self.train = train
         
-        #to get id 
-        self.avl = ArgoverseForecastingLoader(split)
-        self.avl.seq_list = sorted(self.avl.seq_list)
-            
         if 'preprocess' in config and config['preprocess']:
             if train:
                 self.split = np.load(self.config['preprocess_train'], allow_pickle=True)
@@ -73,7 +69,7 @@ class ArgoDataset(Dataset):
                     if key in data:
                         new_data[key] = ref_copy(data[key])
                 data = new_data
-                data["idx"]=idx
+           
             if 'raster' in self.config and self.config['raster']:
                 data.pop('graph')
                 x_min, x_max, y_min, y_max = self.config['pred_range']
@@ -87,7 +83,7 @@ class ArgoDataset(Dataset):
 
         data = self.read_argo_data(idx)
         data = self.get_obj_feats(data)
-        data['idx'] = int(self.avl.seq_list[idx].name[:-4]) #160547
+        data['idx'] = idx   
 
         if 'raster' in self.config and self.config['raster']:
             x_min, x_max, y_min, y_max = self.config['pred_range']

@@ -6,3 +6,6 @@ dataset/
 2way
 dataset
 *.ckpt
+pic/
+pic1/
+*jpg

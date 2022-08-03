@@ -9,6 +9,11 @@ import os
 import torch
 from torch import optim
 
+import pandas as pd
+from argoverse.map_representation.map_api import ArgoverseMap
+from collections import defaultdict
+import matplotlib.lines as mlines
+import scipy.interpolate as interp
 
 def index_dict(data, idcs):
     returns = dict()
@@ -160,3 +165,132 @@ class StepLR:
                 break
             idx += 1
         return self.lr[idx]
+
+_ZORDER = {"AGENT": 15, "AV": 10, "OTHERS": 5}
+def viz_sequence(
+    df,
+    lane_centerlines = None,
+    show= True,
+    smoothen = False,
+    ax=None
+) -> None:
+
+    # Seq data
+    city_name = df["CITY_NAME"].values[0]
+
+    if lane_centerlines is None:
+        # Get API for Argo Dataset map
+        avm = ArgoverseMap()
+        seq_lane_props = avm.city_lane_centerlines_dict[city_name]
+
+    
+
+    x_min = min(df["X"])
+    x_max = max(df["X"])
+    y_min = min(df["Y"])
+    y_max = max(df["Y"])
+
+    if lane_centerlines is None:
+
+        ax.axis(xmin=x_min,xmax=x_max,ymin=y_min,ymax=y_max)
+
+        lane_centerlines = []
+        # Get lane centerlines which lie within the range of trajectories
+        for lane_id, lane_props in seq_lane_props.items():
+
+            lane_cl = lane_props.centerline
+
+            if (
+                np.min(lane_cl[:, 0]) < x_max
+                and np.min(lane_cl[:, 1]) < y_max
+                and np.max(lane_cl[:, 0]) > x_min
+                and np.max(lane_cl[:, 1]) > y_min
+            ):
+                lane_centerlines.append(lane_cl)
+
+    for lane_cl in lane_centerlines:
+        ax.plot(
+            lane_cl[:, 0],
+            lane_cl[:, 1],
+            "--",
+            color="grey",
+            alpha=1,
+            linewidth=1,
+            zorder=0,
+        )
+    frames = df.groupby("TRACK_ID")
+
+    ax.set_xlabel("Map X")
+    ax.set_ylabel("Map Y")
+
+    color_dict = {"AGENT": "#d33e4c", "OTHERS": "#d3e8ef", "AV": "#007672"}
+    object_type_tracker: Dict[int, int] = defaultdict(int)
+
+    # Plot all the tracks up till current frame
+    for group_name, group_data in frames:
+        object_type = group_data["OBJECT_TYPE"].values[0]
+
+        cor_x = group_data["X"].values
+        cor_y = group_data["Y"].values
+
+        if smoothen:
+            polyline = np.column_stack((cor_x, cor_y))
+            num_points = cor_x.shape[0] * 3
+            smooth_polyline = interpolate_polyline(polyline, num_points)
+            cor_x = smooth_polyline[:, 0]
+            cor_y = smooth_polyline[:, 1]
+
+        ax.plot(
+            cor_x,
+            cor_y,
+            "-",
+            color=color_dict[object_type],
+            label=object_type if not object_type_tracker[object_type] else "",
+            alpha=1,
+            linewidth=1,
+            zorder=_ZORDER[object_type],
+        )
+
+        final_x = cor_x[-1]
+        final_y = cor_y[-1]
+
+        if object_type == "AGENT":
+            marker_type = "o"
+            marker_size = 7
+        elif object_type == "OTHERS":
+            marker_type = "o"
+            marker_size = 7
+        elif object_type == "AV":
+            marker_type = "o"
+            marker_size = 7
+
+        ax.plot(
+            final_x,
+            final_y,
+            marker_type,
+            color=color_dict[object_type],
+            label=object_type if not object_type_tracker[object_type] else "",
+            alpha=1,
+            markersize=marker_size,
+            zorder=_ZORDER[object_type],
+        )
+
+        object_type_tracker[object_type] += 1
+
+    red_star = mlines.Line2D([], [], color="red", marker="*", linestyle="None", markersize=7, label="Agent")
+    green_circle = mlines.Line2D(
+        [],
+        [],
+        color="green",
+        marker="o",
+        linestyle="None",
+        markersize=7,
+        label="Others",
+    )
+    black_triangle = mlines.Line2D([], [], color="black", marker="^", linestyle="None", markersize=7, label="AV")
+
+    ax.grid()
+    
+        
+    #ax.axis("off")
+    return ax
