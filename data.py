@@ -73,7 +73,7 @@ class ArgoDataset(Dataset):
                     if key in data:
                         new_data[key] = ref_copy(data[key])
                 data = new_data
-                data["idx"]=idx
+
             if 'raster' in self.config and self.config['raster']:
                 data.pop('graph')
                 x_min, x_max, y_min, y_max = self.config['pred_range']
@@ -83,11 +83,13 @@ class ArgoDataset(Dataset):
                 raster = self.map_query.query(region, data['theta'], data['city'])
 
                 data['raster'] = raster
+            # if not self.train :   #add idx in val set
+            data['idx'] = int(self.avl.seq_list[idx].name[:-4]) 
             return data
 
         data = self.read_argo_data(idx)
         data = self.get_obj_feats(data)
-        data['idx'] = int(self.avl.seq_list[idx].name[:-4]) #160547
+        #160547
 
         if 'raster' in self.config and self.config['raster']:
             x_min, x_max, y_min, y_max = self.config['pred_range']

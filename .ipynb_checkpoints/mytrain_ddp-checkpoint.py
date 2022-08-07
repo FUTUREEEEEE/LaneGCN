@@ -29,12 +29,17 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import subprocess
-from utils import Logger, load_pretrain
+from utils import Logger, load_pretrain,viz_sequence
 
 from torch.distributed.elastic.multiprocessing.errors import record
 from lanegcn import Optimizer
+from data import ArgoTestDataset
 
-
+#vis
+from argoverse.data_loading.argoverse_forecasting_loader import ArgoverseForecastingLoader
+root_dir = "/mnt/lustre/tangxiaqiang/Code/LaneGCN/dataset/val/data"
+afl = ArgoverseForecastingLoader(root_dir)
+import matplotlib.pyplot as plt
 
 MY_TIME=time.strftime('%mmounth%dday%Hhour%Mminit%Ss')
 DEBUG=True
@@ -70,6 +75,7 @@ def main(rank, world_size):
     # initialize the process group
     dist.init_process_group(backend="nccl",world_size=world_size,rank=rank)
     print("inited rank",rank)
+    torch.distributed.barrier()
 
     seed=7
     torch.manual_seed(seed)
@@ -159,6 +165,7 @@ def main(rank, world_size):
         collate_fn=collate_fn,
         pin_memory=True,
     )
+    import pdb;pdb.set_trace()
     
     dataset = ArgoTestDataset(config["test_split"], config, train=False)
     test_loader = DataLoader(
@@ -179,8 +186,8 @@ def main(rank, world_size):
         print(config)
     for i in range(remaining_epochs):
         train(epoch + i, config, train_loader, net, loss, post_process, opt, val_loader)
-    if rank == 0:    
-        test(test_loader,net)
+    # if rank == 0:    
+    #     test(test_loader,net,config)
 
 # def worker_init_fn(pid):
 #     np_seed = hvd.rank() * 1024 + int(pid)
@@ -208,7 +215,8 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
     for i, data in tqdm(enumerate(train_loader),disable=rank):
         epoch += epoch_per_batch
         data = dict(data)
-        
+
+
 
         output = net(data)
         loss_out = loss(output, data)  #output: list len4, output[0]:23,6,30,2 data['gt_preds'][0]:23,30,2
@@ -252,6 +260,24 @@ def val(config, data_loader, net, loss, post_process, epoch):
         data = dict(data)
         with torch.no_grad():
             output = net(data)
+            if dist.get_rank() == 0:
+                import ipdb;ipdb.set_trace()
+            if True and (i+1)%1==0:
+
+                trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
+                probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
+                
+                for trajs,probs,key in zip(trajs_list,probs_list,data["idx"]):
+                    seq_path = f"{root_dir}/"+str(key)+".csv"
+                    fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
+                    ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
+                    
+                    for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
+                        ax.plot(traj[:,0],traj[:,1])
+                        ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
+                print("saving at:"+config["save_dir"]+str(epoch)+"epoch/")
+                plt.savefig(config["save_dir"]+str(epoch)+"epoch/"+str(key)+".jpg")
+            
             loss_out = loss(output, data)
             post_out = post_process(output, data)
             post_process.append(metrics, loss_out, post_out)
@@ -260,14 +286,15 @@ def val(config, data_loader, net, loss, post_process, epoch):
     dt = time.time() - start_time
     post_process.display(metrics, dt, epoch, 777)
     print("------------------END-VAL---------------------")
-    if epoch >10 and DEBUG and dist.get_rank()==0:
-        import ipdb;ipdb.set_trace()
+    # if epoch >10 and DEBUG and dist.get_rank()==0:
+    #     import ipdb;ipdb.set_trace()
     # metrics = sync(metrics)
     # if hvd.rank() == 0:
     #     post_process.display(metrics, dt, epoch)
     net.train()
 
-def test(data_loader,net):
+def test(data_loader,net,config):
+    print("--------------start-test--------------------")
     # begin inference
     preds = {}
     gts = {}
@@ -277,24 +304,36 @@ def test(data_loader,net):
         with torch.no_grad():
             output = net(data)
             results = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
-        for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
-            preds[argo_idx] = pred_traj.squeeze()
-            cities[argo_idx] = data["city"][i]
-            gts[argo_idx] = data["gt_preds"][i][0] if "gt_preds" in data else None
+            
+            for idx, pred_traj in zip(data["argo_id"], results):
+                preds[idx] = pred_traj.squeeze()
+    import csv
+    with open(f"{config['save_dir']}/predictions.csv", 'w', newline='') as csvfile:
+        for _, pred in preds.items():
+            for i, mode in enumerate(pred):
+                writer = csv.writer(csvfile)
+                writer.writerow(['X', 'Y'])
+                for row in mode:
+                    writer.writerow(row)
+        csvfile.close()
+        # for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
+        #     preds[argo_idx] = pred_traj.squeeze()
+        #     cities[argo_idx] = data["city"][i]
+        #     gts[argo_idx] = data["gt_preds"][i][0] if "gt_preds" in data else None
 
-    # save for further visualization
-    res = dict(
-        preds = preds,
-        gts = gts,
-        cities = cities,
-    )
+    # # save for further visualization
+    # res = dict(
+    #     preds = preds,
+    #     gts = gts,
+    #     cities = cities,
+    # )
     # torch.save(res,f"{config['save_dir']}/results.pkl")
     
 
-    # for test set: save as h5 for submission in evaluation server
-    from argoverse.evaluation.competition_util import generate_forecasting_h5
-    generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
-    print("finish generation")
+    # # for test set: save as h5 for submission in evaluation server
+    # from argoverse.evaluation.competition_util import generate_forecasting_h5
+    # generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
+    # print("finish generation")
         
 def save_ckpt(net, opt, save_dir, epoch):
     if not os.path.exists(save_dir):
@@ -343,6 +382,8 @@ if __name__ == "__main__":
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["LOCAL_RANK"] = str(rank % num_gpus)
     os.environ["RANK"] = str(rank)
+    
+    print(f"world_size: {world_size},LOCAL_RANK{rank}")
     
     torch.cuda.set_device(rank % num_gpus)
     main(rank,world_size)

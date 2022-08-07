@@ -39,6 +39,7 @@ from data import ArgoTestDataset
 from argoverse.data_loading.argoverse_forecasting_loader import ArgoverseForecastingLoader
 root_dir = "/mnt/lustre/tangxiaqiang/Code/LaneGCN/dataset/val/data"
 afl = ArgoverseForecastingLoader(root_dir)
+afl.seq_list = sorted(afl.seq_list)
 import matplotlib.pyplot as plt
 
 MY_TIME=time.strftime('%mmounth%dday%Hhour%Mminit%Ss')
@@ -165,6 +166,7 @@ def main(rank, world_size):
         collate_fn=collate_fn,
         pin_memory=True,
     )
+    # import pdb;pdb.set_trace()
     
     dataset = ArgoTestDataset(config["test_split"], config, train=False)
     test_loader = DataLoader(
@@ -214,8 +216,7 @@ def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=
     for i, data in tqdm(enumerate(train_loader),disable=rank):
         epoch += epoch_per_batch
         data = dict(data)
-        # if rank == 0:
-        #     import ipdb;ipdb.set_trace()
+
 
 
         output = net(data)
@@ -260,23 +261,26 @@ def val(config, data_loader, net, loss, post_process, epoch):
         data = dict(data)
         with torch.no_grad():
             output = net(data)
-            
-            if True and (i+1)%1==0:
+            # if dist.get_rank() == 0:
+                # import ipdb;ipdb.set_trace()
+            if True and (i+1)%100==0 and epoch >1:
 
                 trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
                 probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
                 
                 for trajs,probs,key in zip(trajs_list,probs_list,data["idx"]):
                     seq_path = f"{root_dir}/"+str(key)+".csv"
-                    fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
-                    ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
-                    
-                    for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
-                        ax.plot(traj[:,0],traj[:,1])
-                        ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
-                print("saving at:"+config["save_dir"]+str(epoch)+"epoch/")
-                plt.savefig(config["save_dir"]+str(epoch)+"epoch/"+str(key)+".jpg")
-            
+                    if os.path.exists(seq_path):
+                        fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
+                        ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
+                        
+                        for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
+                            ax.plot(traj[:,0],traj[:,1])
+                            ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
+                            
+                        #print("saving at:"+config["save_dir"]+str(epoch)+"epoch/")
+                        #plt.savefig(config["save_dir"]+str(int(epoch))+"epoch/"+str(key)+".jpg")
+                        plt.savefig(config["save_dir"]+"/pic/"+str(key)+".jpg")
             loss_out = loss(output, data)
             post_out = post_process(output, data)
             post_process.append(metrics, loss_out, post_out)
