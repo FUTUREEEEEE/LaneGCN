@@ -143,7 +143,7 @@ def main(rank, world_size):
     # Data loader for training
     dataset = Dataset(config["train_split"], config, train=True)
     
-    train_sampler =DistributedSampler(dataset) #DDP
+    train_sampler =DistributedSampler(dataset, shuffle=True) #DDP
     
     train_loader = DataLoader(
         dataset,
@@ -157,7 +157,7 @@ def main(rank, world_size):
 
     # Data loader for evaluation
     dataset  = Dataset(config["val_split"], config, train=False)
-    val_sampler=DistributedSampler(dataset) #DDP
+    val_sampler=DistributedSampler(dataset, shuffle=False) #DDP
     val_loader = DataLoader(
         dataset,
         batch_size=config["val_batch_size"],
@@ -187,8 +187,8 @@ def main(rank, world_size):
         print(config)
     for i in range(remaining_epochs):
         train(epoch + i, config, train_loader, net, loss, post_process, opt, val_loader)
-    # if rank == 0:    
-    #     test(test_loader,net,config)
+        if rank == 0:    
+            test(test_loader,net,config,epoch + i)
 
 # def worker_init_fn(pid):
 #     np_seed = hvd.rank() * 1024 + int(pid)
@@ -261,13 +261,20 @@ def val(config, data_loader, net, loss, post_process, epoch):
         data = dict(data)
         with torch.no_grad():
             output = net(data)
-            # if dist.get_rank() == 0:
-                # import ipdb;ipdb.set_trace()
-            if True and (i+1)%100==0 and epoch >1:
+            loss_out = loss(output, data)
 
+            #VIS_VAL    
+            if config["do_vis_val"] and (i+1)%config["ratio_of_vis_batch"]==0:
+                
+                save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/val/{int(epoch)}/"
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir)
+                    
+                log_loss=round(float(loss_out["loss"] ),2)
                 trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
                 probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
                 
+                fig_num=0
                 for trajs,probs,key in zip(trajs_list,probs_list,data["idx"]):
                     seq_path = f"{root_dir}/"+str(key)+".csv"
                     if os.path.exists(seq_path):
@@ -278,10 +285,14 @@ def val(config, data_loader, net, loss, post_process, epoch):
                             ax.plot(traj[:,0],traj[:,1])
                             ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
                             
-                        #print("saving at:"+config["save_dir"]+str(epoch)+"epoch/")
-                        #plt.savefig(config["save_dir"]+str(int(epoch))+"epoch/"+str(key)+".jpg")
-                        plt.savefig(config["save_dir"]+"/pic/"+str(key)+".jpg")
-            loss_out = loss(output, data)
+                        plt.savefig(f"{save_dir}{log_loss}_{str(key)}.jpg")   
+                        plt.close('all') 
+                    else:
+                        print(f"find unexists:{seq_path}")
+                    fig_num+=1
+                    if fig_num > config["fig_num_per_batch"] :
+                        break
+            
             post_out = post_process(output, data)
             post_process.append(metrics, loss_out, post_out)
             
@@ -296,47 +307,65 @@ def val(config, data_loader, net, loss, post_process, epoch):
     #     post_process.display(metrics, dt, epoch)
     net.train()
 
-def test(data_loader,net,config):
+def test(data_loader,net,config,epoch):
     print("--------------start-test--------------------")
     # begin inference
     preds = {}
     gts = {}
     cities = {}
+    net.cuda()
+    metrics = dict()
     for ii, data in tqdm(enumerate(data_loader)):
         data = dict(data)
         with torch.no_grad():
             output = net(data)
             results = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
             
-            for idx, pred_traj in zip(data["argo_id"], results):
-                preds[idx] = pred_traj.squeeze()
-    import csv
-    with open(f"{config['save_dir']}/predictions.csv", 'w', newline='') as csvfile:
-        for _, pred in preds.items():
-            for i, mode in enumerate(pred):
-                writer = csv.writer(csvfile)
-                writer.writerow(['X', 'Y'])
-                for row in mode:
-                    writer.writerow(row)
-        csvfile.close()
-        # for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
-        #     preds[argo_idx] = pred_traj.squeeze()
-        #     cities[argo_idx] = data["city"][i]
-        #     gts[argo_idx] = data["gt_preds"][i][0] if "gt_preds" in data else None
+            if config["do_vis_test"] and (i+1)%config["ratio_of_vis_batch"]==0:
+                
+                save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/val/{int(epoch)}/"
+                if not os.path.exists(save_dir):
+                    os.makedirs(save_dir)
+                    
+                trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
+                probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
+                
+                for trajs,probs,key in zip(trajs_list,probs_list,data["idx"]):
+                    seq_path = f"{root_dir}/"+str(key)+".csv"
+                    if os.path.exists(seq_path):
+                        fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
+                        ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
+                        
+                        for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
+                            ax.plot(traj[:,0],traj[:,1])
+                            ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
+                            
+                        plt.savefig(f"{save_dir}{log_loss}_{str(key)}.jpg")   
+                        plt.close('all') 
+                    else:
+                        print(f"find unexists:{seq_path}")
+                        
+        if epoch >= config["num_epochs"]-1:    
+            for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
+                preds[argo_idx] = pred_traj.squeeze()
+                cities[argo_idx] = data["city"][i]
+                gts[argo_idx] = data["gt_preds"][i][0] if "gt_preds" in data else None
 
-    # # save for further visualization
-    # res = dict(
-    #     preds = preds,
-    #     gts = gts,
-    #     cities = cities,
-    # )
-    # torch.save(res,f"{config['save_dir']}/results.pkl")
+    # save for further visualization
+    if epoch >= config["num_epochs"]-1:
+        res = dict(
+            preds = preds,
+            gts = gts,
+            cities = cities,
+        )
+
     
-
-    # # for test set: save as h5 for submission in evaluation server
-    # from argoverse.evaluation.competition_util import generate_forecasting_h5
-    # generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
-    # print("finish generation")
+        # evaluate or submi t
+    
+        # for test set: save as h5 for submission in evaluation server
+        from argoverse.evaluation.competition_util import generate_forecasting_h5
+        generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
+        print("----------------finish generate---------------")
         
 def save_ckpt(net, opt, save_dir, epoch):
     if not os.path.exists(save_dir):

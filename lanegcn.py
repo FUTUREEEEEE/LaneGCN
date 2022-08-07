@@ -33,7 +33,7 @@ config["save_freq"] = 1.0
 config["epoch"] = 0
 config["horovod"] = True
 config["opt"] = "adam"
-config["num_epochs"] = 2#36
+config["num_epochs"] = 36#36
 config["lr"] = [1e-3, 1e-4]
 config["lr_epochs"] = [32]
 config["lr_func"] = StepLR(config["lr"], config["lr_epochs"])
@@ -48,12 +48,17 @@ if not os.path.isabs(config["save_dir"]):
     config["save_dir"] = os.path.join(root_path, "results", config["save_dir"])
 
 config["batch_size"] = 128
-config["val_batch_size"] = 32
+config["val_batch_size"] = 256
 config["lr"] = [x*(config["batch_size"]/32) for x in config["lr"]]
 
 config["workers"] = 0
 config["val_workers"] = config["workers"]
 
+"""Vis"""
+config["do_vis_val"]=True
+config["do_vis_test"]=True
+config["ratio_of_vis_batch"]=int(0.1*39472/config["val_batch_size"]/4)
+config["fig_num_per_batch"]=10 #will be fig_num_per_batch
 
 """Dataset"""
 # Raw Dataset
