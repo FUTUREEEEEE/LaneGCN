@@ -29,18 +29,13 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import subprocess
-from utils import Logger, load_pretrain,viz_sequence
+from utils import Logger, load_pretrain,vis_val
 
 from torch.distributed.elastic.multiprocessing.errors import record
 from lanegcn import Optimizer
 from data import ArgoTestDataset
 
-#vis
-from argoverse.data_loading.argoverse_forecasting_loader import ArgoverseForecastingLoader
-root_dir = "/mnt/lustre/tangxiaqiang/Code/LaneGCN/dataset/val/data"
-afl = ArgoverseForecastingLoader(root_dir)
-afl.seq_list = sorted(afl.seq_list)
-import matplotlib.pyplot as plt
+
 
 MY_TIME=time.strftime('%mmounth%dday%Hhour%Mminit%Ss')
 DEBUG=True
@@ -76,14 +71,18 @@ def main(rank, world_size):
     # initialize the process group
     dist.init_process_group(backend="nccl",world_size=world_size,rank=rank)
     print("inited rank",rank)
-    torch.distributed.barrier()
+    
 
+    #fix the random
     seed=7
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+    torch.use_deterministic_algorithms(True)
 
+    torch.distributed.barrier()
+    
     # Import all settings for experiment.
     args = parser.parse_args()
     model = import_module(args.model)
@@ -187,14 +186,10 @@ def main(rank, world_size):
         print(config)
     for i in range(remaining_epochs):
         train(epoch + i, config, train_loader, net, loss, post_process, opt, val_loader)
-        if rank == 0:    
-            test(test_loader,net,config,epoch + i)
+        # if rank == 0:    
+        #     test(test_loader,net,config,epoch + i)
 
-# def worker_init_fn(pid):
-#     np_seed = hvd.rank() * 1024 + int(pid)
-#     np.random.seed(np_seed)
-#     random_seed = np.random.randint(2 ** 32 - 1)
-#     random.seed(random_seed)
+
 
 
 def train(epoch, config, train_loader, net, loss, post_process, opt, val_loader=None):
@@ -263,35 +258,11 @@ def val(config, data_loader, net, loss, post_process, epoch):
             output = net(data)
             loss_out = loss(output, data)
 
-            #VIS_VAL    
+            #VIS_VAL
             if config["do_vis_val"] and (i+1)%config["ratio_of_vis_batch"]==0:
-                
                 save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/val/{int(epoch)}/"
-                if not os.path.exists(save_dir):
-                    os.makedirs(save_dir)
-                    
-                log_loss=round(float(loss_out["loss"] ),2)
-                trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
-                probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
-                
-                fig_num=0
-                for trajs,probs,key in zip(trajs_list,probs_list,data["idx"]):
-                    seq_path = f"{root_dir}/"+str(key)+".csv"
-                    if os.path.exists(seq_path):
-                        fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
-                        ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
-                        
-                        for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
-                            ax.plot(traj[:,0],traj[:,1])
-                            ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
-                            
-                        plt.savefig(f"{save_dir}{log_loss}_{str(key)}.jpg")   
-                        plt.close('all') 
-                    else:
-                        print(f"find unexists:{seq_path}")
-                    fig_num+=1
-                    if fig_num > config["fig_num_per_batch"] :
-                        break
+                vis_val(config,loss_out,output,data,MY_TIME,epoch,save_dir)    
+
             
             post_out = post_process(output, data)
             post_process.append(metrics, loss_out, post_out)
@@ -325,8 +296,10 @@ def test(data_loader,net,config,epoch):
                 
                 save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/val/{int(epoch)}/"
                 if not os.path.exists(save_dir):
-                    os.makedirs(save_dir)
-                    
+                    try:
+                        os.makedirs(save_dir)
+                    except:
+                        print(f"rank:{dist.get_rank()} try to create dir but falled")
                 trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
                 probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
                 

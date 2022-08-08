@@ -13,6 +13,7 @@ from argoverse.map_representation.map_api import ArgoverseMap
 from skimage.transform import rotate
 
 
+
 class ArgoDataset(Dataset):
     def __init__(self, split, config, train=True):
         self.config = config
@@ -84,7 +85,7 @@ class ArgoDataset(Dataset):
 
                 data['raster'] = raster
             # if not self.train :   #add idx in val set
-            data['idx'] = int(self.avl.seq_list[idx].name[:-4]) 
+            data['argo_id'] = int(self.avl.seq_list[idx].name[:-4]) 
             return data
 
         data = self.read_argo_data(idx)
