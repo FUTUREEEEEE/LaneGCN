@@ -17,9 +17,6 @@ import scipy.interpolate as interp
 
 #vis
 from argoverse.data_loading.argoverse_forecasting_loader import ArgoverseForecastingLoader
-root_dir = "/mnt/lustre/tangxiaqiang/Code/LaneGCN/dataset/val/data"
-afl = ArgoverseForecastingLoader(root_dir)
-afl.seq_list = sorted(afl.seq_list)
 import matplotlib.pyplot as plt
 
 def index_dict(data, idcs):
@@ -302,31 +299,47 @@ def viz_sequence(
     #ax.axis("off")
     return ax
 
-def vis_val(config,loss_out,output,data,MY_TIME,epoch,save_dir):
-        if not os.path.exists(save_dir):
-            try:
-                os.makedirs(save_dir)
-            except:
-                print(f"rank:{torch.distributed.get_rank()} try to create dir but falled")
-        log_loss=round(float(loss_out["loss"] ),2)
-        trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
-        probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
+class vis_while_train():
+    def __init__(self,test:bool) -> None:
+        self.test=test
+        if not self.test:
+            self.root_dir = "/mnt/lustre/tangxiaqiang/Code/LaneGCN/dataset/val/data"
+        else:
+            self.root_dir = "/mnt/lustre/tangxiaqiang/Code/LaneGCN/dataset/test_obs/data"
+        self.afl = ArgoverseForecastingLoader(self.root_dir)
+        self.afl.seq_list = sorted(self.afl.seq_list)
         
-        fig_num=0
-        for trajs,probs,key in zip(trajs_list,probs_list,data["argo_id"]):
-            seq_path = f"{root_dir}/"+str(key)+".csv"
-            if os.path.exists(seq_path):
-                fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
-                ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
-                
-                for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
-                    ax.plot(traj[:,0],traj[:,1])
-                    ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
-                    
-                plt.savefig(f"{save_dir}{log_loss}_{str(key)}.jpg")   
-                plt.close('all') 
+    
+    def vis(self,config,loss_out,output,data,save_dir):
+            if not os.path.exists(save_dir):
+                try:
+                    os.makedirs(save_dir)
+                except:
+                    print(f"rank:{torch.distributed.get_rank()} try to create dir but falled")
+            if self.test : #vis test
+                log_loss=None
             else:
-                print(f"find unexists:{seq_path}")
-            fig_num+=1
-            if fig_num > config["fig_num_per_batch"] :
-                break
+                log_loss=round(float(loss_out["loss"] ),2)
+            trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
+            probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
+            
+            fig_num=0
+            for trajs,probs,key in zip(trajs_list,probs_list,data["argo_id"]):
+                seq_path = f"{self.root_dir}/"+str(key)+".csv"
+                if os.path.exists(seq_path):
+                    fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
+                    ax=viz_sequence(self.afl.get(seq_path).seq_df,ax=ax)
+                    
+                    for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
+                        ax.plot(traj[:,0],traj[:,1])
+                        ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
+                    if self.test:    
+                        plt.savefig(f"{save_dir}{str(key)}.jpg")   
+                    else:
+                        plt.savefig(f"{save_dir}{log_loss}_{str(key)}.jpg")   
+                    plt.close('all') 
+                else:
+                    print(f"find unexists:{seq_path}")
+                fig_num+=1
+                if fig_num > config["fig_num_per_batch"] :
+                    break

@@ -2,10 +2,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# import debugpy
-# debugpy.listen(address = ('0.0.0.0', 5678))
-# debugpy.wait_for_client() 
-# breakpoint()
+import debugpy
+debugpy.listen(address = ('0.0.0.0', 5678))
+debugpy.wait_for_client() 
+breakpoint()
 
 
 import os
@@ -29,11 +29,12 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 import subprocess
-from utils import Logger, load_pretrain,vis_val
+from utils import Logger, load_pretrain,vis_while_train
 
 from torch.distributed.elastic.multiprocessing.errors import record
 from lanegcn import Optimizer
 from data import ArgoTestDataset
+
 
 
 
@@ -79,7 +80,7 @@ def main(rank, world_size):
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    torch.use_deterministic_algorithms(True)
+    # torch.use_deterministic_algorithms(True)
 
     torch.distributed.barrier()
     
@@ -99,7 +100,8 @@ def main(rank, world_size):
         if not os.path.isabs(ckpt_path):
             ckpt_path = os.path.join(config["save_dir"], ckpt_path)
         ckpt = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
-        load_pretrain(net, ckpt["state_dict"])
+        #load_pretrain(net, ckpt["state_dict"])
+        net.load_state_dict(ckpt["state_dict"])
         if args.resume:
             config["epoch"] = ckpt["epoch"]
             opt.load_state_dict(ckpt["opt_state"])
@@ -165,7 +167,7 @@ def main(rank, world_size):
         collate_fn=collate_fn,
         pin_memory=True,
     )
-    # import pdb;pdb.set_trace()
+   
     
     dataset = ArgoTestDataset(config["test_split"], config, train=False)
     test_loader = DataLoader(
@@ -186,8 +188,8 @@ def main(rank, world_size):
         print(config)
     for i in range(remaining_epochs):
         train(epoch + i, config, train_loader, net, loss, post_process, opt, val_loader)
-        # if rank == 0:    
-        #     test(test_loader,net,config,epoch + i)
+        if rank == 0:    
+            test(test_loader,net,config,epoch + i)
 
 
 
@@ -252,6 +254,8 @@ def val(config, data_loader, net, loss, post_process, epoch):
     print("---------------VAL---------------------")
     start_time = time.time()
     metrics = dict()
+    if config["do_vis_val"]:
+        viser=vis_while_train(test=False)
     for i, data in enumerate(data_loader):
         data = dict(data)
         with torch.no_grad():
@@ -261,7 +265,7 @@ def val(config, data_loader, net, loss, post_process, epoch):
             #VIS_VAL
             if config["do_vis_val"] and (i+1)%config["ratio_of_vis_batch"]==0:
                 save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/val/{int(epoch)}/"
-                vis_val(config,loss_out,output,data,MY_TIME,epoch,save_dir)    
+                viser.vis(config,loss_out,output,data,save_dir)    
 
             
             post_out = post_process(output, data)
@@ -286,43 +290,25 @@ def test(data_loader,net,config,epoch):
     cities = {}
     net.cuda()
     metrics = dict()
+    if config["do_vis_test"] :
+        viser=vis_while_train(test=True)
     for ii, data in tqdm(enumerate(data_loader)):
         data = dict(data)
         with torch.no_grad():
             output = net(data)
             results = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
-            
-            if config["do_vis_test"] and (i+1)%config["ratio_of_vis_batch"]==0:
-                
-                save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/val/{int(epoch)}/"
-                if not os.path.exists(save_dir):
-                    try:
-                        os.makedirs(save_dir)
-                    except:
-                        print(f"rank:{dist.get_rank()} try to create dir but falled")
-                trajs_list = [x[0:1].detach().cpu().numpy() for x in output["reg"]]
-                probs_list=[x[0:1].detach().cpu().numpy() for x in output["cls"]]
-                
-                for trajs,probs,key in zip(trajs_list,probs_list,data["idx"]):
-                    seq_path = f"{root_dir}/"+str(key)+".csv"
-                    if os.path.exists(seq_path):
-                        fig,ax = plt.subplots(figsize=(16, 14),dpi=100)
-                        ax=viz_sequence(afl.get(seq_path).seq_df,ax=ax)
-                        
-                        for traj,prob in zip(trajs.squeeze(),probs.squeeze()):
-                            ax.plot(traj[:,0],traj[:,1])
-                            ax.text(traj[-1,0],traj[-1,1],str(round(prob,2)))
-                            
-                        plt.savefig(f"{save_dir}{log_loss}_{str(key)}.jpg")   
-                        plt.close('all') 
-                    else:
-                        print(f"find unexists:{seq_path}")
+
+            #VIS_test
+            if config["do_vis_test"] and (ii+1) % len(data_loader) == 0:  #only vis the last batch
+                save_dir=f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/pic/test/{int(epoch)}/"
+                viser.vis(config,None,output,data,save_dir)    
                         
         if epoch >= config["num_epochs"]-1:    
             for i, (argo_idx, pred_traj) in enumerate(zip(data["argo_id"], results)):
                 preds[argo_idx] = pred_traj.squeeze()
                 cities[argo_idx] = data["city"][i]
                 gts[argo_idx] = data["gt_preds"][i][0] if "gt_preds" in data else None
+            
 
     # save for further visualization
     if epoch >= config["num_epochs"]-1:
@@ -335,9 +321,9 @@ def test(data_loader,net,config,epoch):
     
         # evaluate or submi t
     
-        # for test set: save as h5 for submission in evaluation server
+        # for test set: save as h5 for submission in evaluation ser ver
         from argoverse.evaluation.competition_util import generate_forecasting_h5
-        generate_forecasting_h5(preds, f"{config['save_dir']}/submit.h5")  # this might take awhile
+        generate_forecasting_h5(preds, f"/mnt/lustre/tangxiaqiang/Code/LaneGCN/results/lanegcn{MY_TIME}/submit.h5")  # this might take awhile
         print("----------------finish generate---------------")
         
 def save_ckpt(net, opt, save_dir, epoch):

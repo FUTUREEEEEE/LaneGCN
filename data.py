@@ -153,7 +153,7 @@ class ArgoDataset(Dataset):
         return data
     
     def get_obj_feats(self, data):
-        orig = data['trajs'][0][19].copy().astype(np.float32)
+        orig = data['trajs'][0][19].copy().astype(np.float32)  #target 车辆2s的位置
 
         if self.train and self.config['rot_aug']:
             theta = np.random.rand() * np.pi * 2.0
@@ -192,7 +192,7 @@ class ArgoDataset(Dataset):
             traj = traj[i:]
 
             feat = np.zeros((20, 3), np.float32)
-            feat[step, :2] = np.matmul(rot, (traj - orig.reshape(-1, 2)).T).T
+            feat[step, :2] = np.matmul(rot, (traj - orig.reshape(-1, 2)).T).T  #旋转到target为中心2s位置为原点的坐标系
             feat[step, 2] = 1.0
 
             x_min, x_max, y_min, y_max = self.config['pred_range']

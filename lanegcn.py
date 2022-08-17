@@ -33,7 +33,7 @@ config["save_freq"] = 1.0
 config["epoch"] = 0
 config["horovod"] = True
 config["opt"] = "adam"
-config["num_epochs"] = 36#36
+config["num_epochs"] = 20#36
 config["lr"] = [1e-3, 1e-4]
 config["lr_epochs"] = [32]
 config["lr_func"] = StepLR(config["lr"], config["lr_epochs"])
@@ -47,16 +47,16 @@ if "save_dir" not in config:
 if not os.path.isabs(config["save_dir"]):
     config["save_dir"] = os.path.join(root_path, "results", config["save_dir"])
 
-config["batch_size"] = 128
+config["batch_size"] = 32
 config["val_batch_size"] = 256
-config["lr"] = [x*(config["batch_size"]/32) for x in config["lr"]]
+config["lr"] = [x*(config["batch_size"]/32)*int(os.environ["SLURM_NTASKS"]) for x in config["lr"]]
 
 config["workers"] = 0
 config["val_workers"] = config["workers"]
 
 """Vis"""
-config["do_vis_val"]=True
-config["do_vis_test"]=True
+config["do_vis_val"]=False
+config["do_vis_test"]=False
 config["ratio_of_vis_batch"]=int(0.1*39472/config["val_batch_size"]/4)
 config["fig_num_per_batch"]=10 #will be fig_num_per_batch
 
@@ -133,7 +133,7 @@ class Net(nn.Module):
 
     def forward(self, data: Dict) -> Dict[str, List[Tensor]]:
         # construct actor feature
-        actors, actor_idcs = actor_gather(gpu(data["feats"]))
+        actors, actor_idcs = actor_gather(gpu(data["feats"]))  #feat : obs trajs b,[18, 20, 3]
         actor_ctrs = gpu(data["ctrs"])
         actors = self.actor_net(actors)
 
@@ -169,7 +169,7 @@ def actor_gather(actors: List[Tensor]) -> Tuple[Tensor, List[Tensor]]:
     actor_idcs = []
     count = 0
     for i in range(batch_size):
-        idcs = torch.arange(count, count + num_actors[i]).to(actors.device)
+        idcs = torch.arange(count, count + num_actors[i]).to(actors.device) #属于第i个样本的actor下标
         actor_idcs.append(idcs)
         count += num_actors[i]
     return actors, actor_idcs
@@ -245,7 +245,7 @@ class ActorNet(nn.Module):
             n_in = n_out[i]
         self.groups = nn.ModuleList(groups)
 
-        n = config["n_actor"]
+        n = config["n_actor"] #traj embedding dim
         lateral = []
         for i in range(len(n_out)):
             lateral.append(Conv1d(n_out[i], n, norm=norm, ng=ng, act=False))
@@ -253,21 +253,21 @@ class ActorNet(nn.Module):
 
         self.output = Res1d(n, n, norm=norm, ng=ng)
 
-    def forward(self, actors: Tensor) -> Tensor:
+    def forward(self, actors: Tensor) -> Tensor: #mapping [num_actors,20] -> [num_actors,config["n_actor"]]
         out = actors
 
         outputs = []
-        for i in range(len(self.groups)):
+        for i in range(len(self.groups)):  #apply three kind of conv1d
             out = self.groups[i](out)
             outputs.append(out)
 
-        out = self.lateral[-1](outputs[-1])
-        for i in range(len(outputs) - 2, -1, -1):
+        out = self.lateral[-1](outputs[-1]) #another conv1d for the third length output of conv
+        for i in range(len(outputs) - 2, -1, -1): #upsample while conv 
             out = F.interpolate(out, scale_factor=2, mode="linear", align_corners=False)
-            out += self.lateral[i](outputs[i])
+            out += self.lateral[i](outputs[i]) #5 ->10 + 10 ->20 +20 (FPN)
 
-        out = self.output(out)[:, :, -1]
-        return out
+        out = self.output(out)[:, :, -1] #20->1 (0)
+        return out 
 
 
 class MapNet(nn.Module):
@@ -315,8 +315,8 @@ class MapNet(nn.Module):
         self.fuse = nn.ModuleDict(fuse)
         self.relu = nn.ReLU(inplace=True)
 
-    def forward(self, graph):
-        if (
+    def forward(self, graph): #dict_keys(['idcs', 'ctrs', 'feats', 'turn', 'control', 'intersect', 'pre', 'suc', 'left', 'right'])
+        if (  #seems to be a padding
             len(graph["feats"]) == 0
             or len(graph["pre"][-1]["u"]) == 0
             or len(graph["suc"][-1]["u"]) == 0
@@ -328,8 +328,8 @@ class MapNet(nn.Module):
                 temp.new().resize_(0),
             )
 
-        ctrs = torch.cat(graph["ctrs"], 0)
-        feat = self.input(ctrs)
+        ctrs = torch.cat(graph["ctrs"], 0) #concat every sample in a batch
+        feat = self.input(ctrs) #[batch*num_actors_per_sample,2]->[...,128]
         feat += self.seg(graph["feats"])
         feat = self.relu(feat)
 
