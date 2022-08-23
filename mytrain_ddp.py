@@ -3,7 +3,7 @@
 # limitations under the License.
 
 import debugpy
-debugpy.listen(address = ('0.0.0.0', 5678))
+debugpy.listen(address = ('0.0.0.0', 56781))
 debugpy.wait_for_client() 
 breakpoint()
 

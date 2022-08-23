@@ -90,7 +90,7 @@ class ArgoDataset(Dataset):
 
         data = self.read_argo_data(idx)
         data = self.get_obj_feats(data)
-        #160547
+        data['idx'] = idx#160547
 
         if 'raster' in self.config and self.config['raster']:
             x_min, x_max, y_min, y_max = self.config['pred_range']

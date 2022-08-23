@@ -1,10 +1,10 @@
 # Copyright (c) 2020 Uber Technologies, Inc.
 # Please check LICENSE for more detail
 
-# import debugpy
-# debugpy.listen(address = ('0.0.0.0', 5678))
-# debugpy.wait_for_client() 
-# breakpoint()
+import debugpy
+debugpy.listen(address = ('0.0.0.0', 5678))
+debugpy.wait_for_client() 
+breakpoint()
 """
 Preprocess the data(csv), build graph from the HDMAP and saved as pkl
 """
@@ -137,12 +137,12 @@ def val(config):
             for key in [
                 "idx",
                 "city",
-                "feats",
+                "feats", #2s obv
                 "ctrs",
                 "orig",
                 "theta",
                 "rot",
-                "gt_preds",
+                "gt_preds", #3s gt
                 "has_preds",
                 "graph",
             ]:

@@ -327,18 +327,18 @@ class MapNet(nn.Module):
                 [temp.new().long().resize_(0) for x in graph["node_idcs"]],
                 temp.new().resize_(0),
             )
-
+        #Encoding Node Feature
         ctrs = torch.cat(graph["ctrs"], 0) #concat every sample in a batch
-        feat = self.input(ctrs) #[batch*num_actors_per_sample,2]->[...,128]
-        feat += self.seg(graph["feats"])
+        feat = self.input(ctrs) #[batch*num_lane_node_per_sample,2]->[...,128]
+        feat += self.seg(graph["feats"])  #[batch*num_lane_node_per_sample,2]->[...,128]
         feat = self.relu(feat)
 
         """fuse map"""
         res = feat
-        for i in range(len(self.fuse["ctr"])):
+        for i in range(len(self.fuse["ctr"])):   # 4 dilation
             temp = self.fuse["ctr"][i](feat)
-            for key in self.fuse:
-                if key.startswith("pre") or key.startswith("suc"):
+            for key in self.fuse: #odict_keys(['ctr', 'norm', 'ctr2', 'left', 'right', 'pre0', 'suc0', 'pre1', 'suc1', 'pre2', 'suc2', 'pre3', 'suc3', 'pre4', 'suc4', 'pre5', 'suc5'])
+                if key.startswith("pre") or key.startswith("suc"): 
                     k1 = key[:3]
                     k2 = int(key[3:])
                     temp.index_add_(
